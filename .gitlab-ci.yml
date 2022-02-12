@@ -1,0 +1,41 @@
+image: "rust:1.51.0-buster"
+
+stages:
+  - test
+  - build
+
+default:
+  before_script:
+    - apt -y update
+    - apt -y install --upgrade binutils-arm-none-eabi git openssh-client bash gcc-multilib
+    - rustup override set nightly
+    - rustup target install thumbv7em-none-eabi
+    - mkdir build
+    - eval $(ssh-agent -s)
+    - bash -c 'ssh-add <(echo "$SSH_KEY" | base64 -d)'
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts 
+    - ssh-keyscan gitlab.com >> ~/.ssh/known_hosts
+
+test:
+  stage: test
+  script: cargo test
+
+build_sender:
+  stage: build
+  script:
+    - cargo build --release --features sender
+    - arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabi/release/node build/sender.bin
+  artifacts:
+    paths:
+      - build/sender.bin
+
+build_receiver:
+  stage: build
+  script:
+    - cargo build --release --features receiver
+    - arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabi/release/node build/receiver.bin
+  artifacts:
+    paths:
+      - build/receiver.bin
