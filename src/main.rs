@@ -5,8 +5,9 @@
 
 extern crate alloc;
 
-use core::{cell::RefCell, panic::PanicInfo};
+use core::panic::PanicInfo;
 
+use alloc::vec;
 //use cortex_m;
 use cortex_m_rt::entry;
 
@@ -14,11 +15,8 @@ use hal::{
     gpio::*,
     pac::USART2,
     prelude::*,
-    rtc::Rtc,
     serial::{config::Config, Serial, Tx},
 };
-
-use rtcc::{NaiveTime, Rtcc};
 
 use onewire::{ds18b20, DeviceSearch, OneWire, OpenDrainOutput, DS18B20};
 use stm32f4xx_hal as hal;
@@ -31,56 +29,48 @@ use mem::ALLOCATOR;
 pub static mut DELAY: Option<hal::delay::Delay> = None;
 pub static mut TX: Option<Tx<USART2>> = None;
 
-struct StmTimer {
-    rtc: RefCell<Rtc>,
+fn blink_led(led: &mut ErasedPin<Output<PushPull>>) {
+    println!("Blink");
+    led.set_high();
+    wait(100);
+    led.set_low();
+    wait(200);
 }
 
-impl StmTimer {
-    pub fn new(rtc: Rtc) -> Self {
-        Self {
-            rtc: RefCell::new(rtc),
+fn blink_temperature(led: &mut ErasedPin<Output<PushPull>>, mut temperature: f32) {
+    let mut digits = vec![];
+    while temperature > 1.0 {
+        let digit = temperature as i32 % 10;
+        temperature /= 10.0;
+        digits.push(digit);
+    }
+    let digits = digits.into_iter().rev();
+
+    for digit in digits {
+        for _ in 0..digit {
+            blink_led(led);
         }
-    }
-
-    fn now(&self) -> u64 {
-        self.rtc
-            .borrow_mut()
-            .get_time()
-            .unwrap()
-            .signed_duration_since(NaiveTime::from_hms(0, 0, 0))
-            .num_seconds() as u64
-    }
-
-    fn delay(&self, duration: core::time::Duration) {
-        wait(duration.as_millis().try_into().unwrap());
+        wait(500);
     }
 }
 
-async fn blink_led(mut pin: ErasedPin<Output<PushPull>>) {
-    loop {
-        println!("Blink");
-        pin.set_high();
-        wait(100);
-        pin.set_low();
-        wait(100);
+fn read_temperature<ODO: OpenDrainOutput>(
+    ds18b20: &DS18B20,
+    mut wire: &mut OneWire<ODO>,
+) -> Result<f32, &'static str> {
+    let resolution = ds18b20
+        .measure_temperature(&mut wire, unsafe { DELAY.as_mut().unwrap() })
+        .unwrap();
+
+    wait(resolution.time_ms().into());
+
+    if let Ok(temperature) = ds18b20.read_temperature(&mut wire, unsafe { DELAY.as_mut().unwrap() })
+    {
+        let temperature = temperature as f32 * 0.0625;
+        println!("temperature: {}", temperature);
+        return Ok(temperature);
     }
-}
-
-async fn read_temperature<ODO: OpenDrainOutput>(ds18b20: DS18B20, mut wire: OneWire<ODO>) {
-    loop {
-        let resolution = ds18b20
-            .measure_temperature(&mut wire, unsafe { DELAY.as_mut().unwrap() })
-            .unwrap();
-
-        wait(resolution.time_ms().into());
-
-        if let Ok(temperature) =
-            ds18b20.read_temperature(&mut wire, unsafe { DELAY.as_mut().unwrap() })
-        {
-            println!("temperature: {}", temperature as f32 * 0.0625);
-        }
-        wait(100);
-    }
+    Err("Couldn't read temperature.")
 }
 
 #[entry]
@@ -89,7 +79,7 @@ fn main() -> ! {
     let size = 1024;
     unsafe { ALLOCATOR.init(start, size) }
 
-    let mut device_peripherals = hal::pac::Peripherals::take().unwrap();
+    let device_peripherals = hal::pac::Peripherals::take().unwrap();
     let core_peripherals = cortex_m::peripheral::Peripherals::take().unwrap();
 
     let gpioa = device_peripherals.GPIOA.split();
@@ -115,14 +105,6 @@ fn main() -> ! {
 
     println!("Setup done");
 
-    let rtc = Rtc::new(
-        device_peripherals.RTC,
-        255,
-        127,
-        false,
-        &mut device_peripherals.PWR,
-    );
-
     // OneWire Setup
     let one = gpioa
         .pa0
@@ -144,25 +126,18 @@ fn main() -> ! {
 
     let sensor = DS18B20::new(device).unwrap();
 
-    let timer = StmTimer::new(rtc);
-    let now = timer.now();
-
-    exec.spawn(Task::new(
-        now + 50,
-        DelayStrategy::ReturnError,
-        read_temperature(sensor, wire),
-    ));
-
-    // exec.spawn(Task::new(
-    //     now + 50,
-    //     DelayStrategy::ReturnError,
-    //     blink_led(led_pin.erase()),
-    // ));
-
-    exec.run().unwrap();
-
-    #[allow(clippy::empty_loop)]
-    loop {}
+    let mut led_pin = led_pin.erase();
+    loop {
+        let temperature = match read_temperature(&sensor, &mut wire) {
+            Ok(it) => it,
+            Err(_) => {
+                println!("Couldn't read temperature.");
+                continue;
+            }
+        };
+        blink_temperature(&mut led_pin, temperature);
+        wait(1000);
+    }
 }
 
 pub fn wait(millis: u32) {
