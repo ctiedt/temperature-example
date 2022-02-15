@@ -211,11 +211,11 @@ fn main() -> ! {
         read_temperature_worker(sensor, wire),
     ));
 
-    exec.spawn(Task::new(
-        Deadline::Infinite,
-        DelayStrategy::ReturnError,
-        blink_led_worker(led_pin.erase()),
-    ));
+    // exec.spawn(Task::new(
+    //     Deadline::Infinite,
+    //     DelayStrategy::ReturnError,
+    //     blink_led_worker(led_pin.erase()),
+    // ));
 
     exec.run().unwrap();
 
