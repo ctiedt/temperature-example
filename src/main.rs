@@ -5,8 +5,16 @@
 
 extern crate alloc;
 
-use core::{cell::RefCell, panic::PanicInfo};
+#[macro_use]
+extern crate lazy_static;
 
+use core::{
+    cell::RefCell,
+    panic::PanicInfo,
+    sync::atomic::{AtomicU16, Ordering},
+};
+
+use alloc::vec;
 //use cortex_m;
 use cortex_m_rt::entry;
 
@@ -18,8 +26,9 @@ use hal::{
     serial::{config::Config, Serial, Tx},
 };
 
-use dependability::runtime::prelude::*;
-use dependability::runtime::task::noop::noop;
+use dependability::runtime::task::{
+    deadline::Deadline, executor::Executor, noop::noop, DelayStrategy, Task,
+};
 use dependability::{
     retry::{retry, RetryError},
     runtime::time::Timer,
@@ -65,18 +74,44 @@ impl Timer for StmTimer {
     }
 }
 
-async fn blink_led(mut pin: ErasedPin<Output<PushPull>>) {
-    loop {
-        println!("Blink");
-        pin.set_high();
-        wait(100);
-        pin.set_low();
-        wait(100);
+async fn wait_async(millis: u32) {
+    wait(millis);
+    noop().await;
+}
+
+async fn blink_led(led: &mut ErasedPin<Output<PushPull>>) {
+    println!("Blink");
+    led.set_high();
+    wait_async(100).await;
+    led.set_low();
+    wait_async(200).await;
+}
+
+async fn blink_temperature(led: &mut ErasedPin<Output<PushPull>>, mut temperature: f32) {
+    let mut digits = vec![];
+    while temperature > 1.0 {
+        let digit = temperature as i32 % 10;
+        temperature /= 10.0;
+        digits.push(digit);
         noop().await;
+    }
+    noop().await;
+    let digits = digits.into_iter().rev();
+
+    for digit in digits {
+        for _ in 0..digit {
+            blink_led(led).await;
+        }
+        wait_async(500).await;
     }
 }
 
-async fn read_temperature<ODO: OpenDrainOutput>(ds18b20: DS18B20, mut wire: OneWire<ODO>) {
+lazy_static! {
+    // Multiply with 0.0625 to get the actual temperature.
+    static ref TEMPERATURE: AtomicU16 = 0.into();
+}
+
+async fn read_temperature_worker<ODO: OpenDrainOutput>(ds18b20: DS18B20, mut wire: OneWire<ODO>) {
     loop {
         let resolution = ds18b20
             .measure_temperature(&mut wire, unsafe { DELAY.as_mut().unwrap() })
@@ -88,10 +123,20 @@ async fn read_temperature<ODO: OpenDrainOutput>(ds18b20: DS18B20, mut wire: OneW
             ds18b20.read_temperature(&mut wire, unsafe { DELAY.as_mut().unwrap() }),
             3
         ) {
-            println!("temperature: {}", temperature as f32 * 0.0625);
+            TEMPERATURE.store(temperature, Ordering::Relaxed);
+            wait_async(1000).await;
+
+            let temperature = temperature as f32 * 0.0625;
+            println!("temperature: {}", temperature);
         }
-        noop().await;
-        wait(100);
+    }
+}
+
+async fn blink_led_worker(mut pin: ErasedPin<Output<PushPull>>) {
+    loop {
+        let temperature = TEMPERATURE.load(Ordering::Relaxed) as f32 * 0.0625;
+        blink_temperature(&mut pin, temperature).await;
+        wait_async(1000).await;
     }
 }
 
@@ -157,20 +202,19 @@ fn main() -> ! {
     let sensor = DS18B20::new(device).unwrap();
 
     let timer = StmTimer::new(rtc);
-    let now = timer.now();
 
     let mut exec = Executor::new(timer);
 
     exec.spawn(Task::new(
-        now + 50,
+        Deadline::Infinite,
         DelayStrategy::ReturnError,
-        read_temperature(sensor, wire),
+        read_temperature_worker(sensor, wire),
     ));
 
     exec.spawn(Task::new(
-        now + 50,
+        Deadline::Infinite,
         DelayStrategy::ReturnError,
-        blink_led(led_pin.erase()),
+        blink_led_worker(led_pin.erase()),
     ));
 
     exec.run().unwrap();
