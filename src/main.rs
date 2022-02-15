@@ -18,13 +18,6 @@ use hal::{
     serial::{config::Config, Serial, Tx},
 };
 
-use dependability::runtime::prelude::*;
-use dependability::runtime::task::noop::noop;
-use dependability::{
-    retry::{retry, RetryError},
-    runtime::time::Timer,
-};
-
 use rtcc::{NaiveTime, Rtcc};
 
 use onewire::{ds18b20, DeviceSearch, OneWire, OpenDrainOutput, DS18B20};
@@ -48,10 +41,8 @@ impl StmTimer {
             rtc: RefCell::new(rtc),
         }
     }
-}
 
-impl Timer for StmTimer {
-    fn now(&self) -> dependability::runtime::time::Timestamp {
+    fn now(&self) -> u64 {
         self.rtc
             .borrow_mut()
             .get_time()
@@ -72,7 +63,6 @@ async fn blink_led(mut pin: ErasedPin<Output<PushPull>>) {
         wait(100);
         pin.set_low();
         wait(100);
-        noop().await;
     }
 }
 
@@ -84,13 +74,11 @@ async fn read_temperature<ODO: OpenDrainOutput>(ds18b20: DS18B20, mut wire: OneW
 
         wait(resolution.time_ms().into());
 
-        if let Ok(temperature) = retry!(
-            ds18b20.read_temperature(&mut wire, unsafe { DELAY.as_mut().unwrap() }),
-            3
-        ) {
+        if let Ok(temperature) =
+            ds18b20.read_temperature(&mut wire, unsafe { DELAY.as_mut().unwrap() })
+        {
             println!("temperature: {}", temperature as f32 * 0.0625);
         }
-        noop().await;
         wait(100);
     }
 }
@@ -159,19 +147,17 @@ fn main() -> ! {
     let timer = StmTimer::new(rtc);
     let now = timer.now();
 
-    let mut exec = Executor::new(timer);
-
     exec.spawn(Task::new(
         now + 50,
         DelayStrategy::ReturnError,
         read_temperature(sensor, wire),
     ));
 
-    exec.spawn(Task::new(
-        now + 50,
-        DelayStrategy::ReturnError,
-        blink_led(led_pin.erase()),
-    ));
+    // exec.spawn(Task::new(
+    //     now + 50,
+    //     DelayStrategy::ReturnError,
+    //     blink_led(led_pin.erase()),
+    // ));
 
     exec.run().unwrap();
 

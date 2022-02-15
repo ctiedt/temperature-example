@@ -11,5 +11,3 @@ embedded-hal = "0.2"
 stm32f4xx-hal = { version = "0.11", features = ["stm32f401", "rt"] }
 onewire = {git = "https://github.com/kellerkindt/onewire"}
 rtcc = "0.2"
-# dependability = {path = "../dependability/dependability", features = ["retry", "runtime"]}
-dependability = {git = "https://github.com/MarcelGarus/dependability", features = ["retry", "runtime"]}
